@@ -71,10 +71,25 @@
       <summary>Allow Interaction</summary>
       <description>If true, gnomelets can be dragged with the mouse.</description>
     </key>
+    <key name="spawn-offset" type="i">
+      <default>0</default>
+      <summary>Spawn Offset from Top</summary>
+      <description>The vertical offset from the top of the screen where gnomelets spawn.</description>
+    </key>
     <key name="jump-power" type="i">
       <default>20</default>
       <summary>Jump Power</summary>
       <description>The vertical force of the jump.</description>
+    </key>
+    <key name="death-by-high-falls" type="b">
+      <default>false</default>
+      <summary>Death by High Falls</summary>
+      <description>If true, gnomelets will splat with a particle explosion when falling from more than half the screen height.</description>
+    </key>
+    <key name="explode-on-click" type="b">
+      <default>false</default>
+      <summary>Explode on Click</summary>
+      <description>If true, gnomelets will splat with a particle explosion when clicked.</description>
     </key>
   </schema>
 </schemalist>

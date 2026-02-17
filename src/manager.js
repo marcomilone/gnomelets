@@ -40,7 +40,7 @@ export const GnomeletManager = GObject.registerClass(
             }
 
             let file = Gio.File.new_for_uri(import.meta.url);
-            let imagesDir = file.get_parent().get_child('images');
+            let imagesDir = file.get_parent().get_child('images').get_child('characters');
             let typeDir = imagesDir.get_child(typeName);
 
             typeDir.query_info_async(
@@ -214,6 +214,8 @@ export const GnomeletManager = GObject.registerClass(
             } else if (key === 'is-enabled') {
                 this._updateEnabledState();
             } else if (key === 'allow-interaction') {
+                this._updateInteractions();
+            } else if (key === 'explode-on-click') {
                 this._updateInteractions();
             } else if (key === 'jump-power') {
                 this._updateJumpPower();

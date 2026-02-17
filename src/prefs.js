@@ -22,7 +22,8 @@ export default class DesktopGnomeletsPreferences extends ExtensionPreferences {
 
         // Dynamic listing of gnomelet types
         const file = Gio.File.new_for_uri(import.meta.url);
-        const imagesDir = file.get_parent().get_child('images');
+        // Use images/characters/ exclusively
+        const imagesDir = file.get_parent().get_child('images').get_child('characters');
 
         imagesDir.enumerate_children_async(
             'standard::name,standard::type',
@@ -105,6 +106,20 @@ export default class DesktopGnomeletsPreferences extends ExtensionPreferences {
         scaleRow.add_suffix(scaleSpin);
         group.add(scaleRow);
 
+        // Spawn offset from top
+        const spawnOffsetRow = new Adw.ActionRow({ title: 'Spawn Offset from Top' });
+        const spawnOffsetSpin = new Gtk.SpinButton({
+            adjustment: new Gtk.Adjustment({
+                lower: 0,
+                upper: 50,
+                step_increment: 1,
+            }),
+            valign: Gtk.Align.CENTER,
+        });
+        settings.bind('spawn-offset', spawnOffsetSpin, 'value', Gio.SettingsBindFlags.DEFAULT);
+        spawnOffsetRow.add_suffix(spawnOffsetSpin);
+        group.add(spawnOffsetRow);
+
         // Jump Power Row
         const jumpRow = new Adw.ActionRow({ title: 'Jump Power' });
         const jumpSpin = new Gtk.SpinButton({
@@ -118,6 +133,8 @@ export default class DesktopGnomeletsPreferences extends ExtensionPreferences {
         settings.bind('jump-power', jumpSpin, 'value', Gio.SettingsBindFlags.DEFAULT);
         jumpRow.add_suffix(jumpSpin);
         group.add(jumpRow);
+
+        
 
         // In Front of Maximized (mapped to floor-z-order)
         const zOrderRow = new Adw.ComboRow({
@@ -220,6 +237,34 @@ export default class DesktopGnomeletsPreferences extends ExtensionPreferences {
         settings.bind('show-indicator', indicatorSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
         indicatorRow.add_suffix(indicatorSwitch);
         group.add(indicatorRow);
+
+        // Gore Group
+        const goreGroup = new Adw.PreferencesGroup({ title: 'Gore' });
+        page.add(goreGroup);
+
+        // Death by Falls
+        const deathByHighFallsRow = new Adw.ActionRow({
+            title: 'Death by Fall',
+            subtitle: 'Gnomelets splat when falling from more than half of the screen height',
+        });
+        const deathByHighFallsSwitch = new Gtk.Switch({
+            valign: Gtk.Align.CENTER,
+        });
+        settings.bind('death-by-high-falls', deathByHighFallsSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
+        deathByHighFallsRow.add_suffix(deathByHighFallsSwitch);
+        goreGroup.add(deathByHighFallsRow);
+
+        // Explode on Click
+        const explodeOnClickRow = new Adw.ActionRow({
+            title: 'Death by Click',
+            subtitle: 'Gnomelets explode when clicked',
+        });
+        const explodeOnClickSwitch = new Gtk.Switch({
+            valign: Gtk.Align.CENTER,
+        });
+        settings.bind('explode-on-click', explodeOnClickSwitch, 'active', Gio.SettingsBindFlags.DEFAULT);
+        explodeOnClickRow.add_suffix(explodeOnClickSwitch);
+        goreGroup.add(explodeOnClickRow);
 
         // Actions Group
         const actionsGroup = new Adw.PreferencesGroup({ title: 'Actions' });

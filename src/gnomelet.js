@@ -1,6 +1,7 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
@@ -27,11 +28,6 @@ export const Gnomelet = GObject.registerClass(
             this._settings = settings;
             this._resourceProvider = resourceProvider;
 
-            // --- State Initialization ---
-            this._state = State.FALLING;
-            this._vx = 0; // Velocity X
-            this._vy = 0; // Velocity Y
-
             // --- Animation State ---
             this._frame = 0; // Current sprite frame index
             this._animationTimer = 0; // Counter for animation timing
@@ -45,15 +41,8 @@ export const Gnomelet = GObject.registerClass(
             // --- Image Resources ---
             this._frameImages = frameImages;
 
-            // --- Dimensions and Scale ---
-            // Calculate initial dimensions accounting for interface scale
-            let iconSize = this._updateDimensions();
-
-            this._randomizeStartPos();
-
             // --- Actor Setup (St.Icon) ---
-            // NOTE: St.Icon handles scaling better when using only icon_size.
-            // We avoid explicit width/height to prevent conflicts with internal icon management.
+            let iconSize = this._updateDimensions();
             this._icon = new St.Icon({
                 visible: true,
                 reactive: false,
@@ -68,20 +57,17 @@ export const Gnomelet = GObject.registerClass(
             });
             this.actor.add_child(this._icon);
 
-            // Set initial frame content
             if (this._frameImages.length > 0 && this._frameImages[0]) {
                 this._icon.set_gicon(this._frameImages[0]);
             }
 
-            this.actor._delegate = this; // Fix for DND source identification
-
-            // Set initial layer based on context (Fix for maximized window visibility)
-            this._resetLayer();
-            this.actor.set_position(this._x, this._y);
+            this.actor._delegate = this;
 
             this._updateInteraction();
             this.updateJumpPower();
-            this._updateAnimation();
+
+            // Only static setup above. Now call _respawn for runtime state.
+            this._respawn();
         }
 
         // Property to define facing based on Velocity X
@@ -96,6 +82,29 @@ export const Gnomelet = GObject.registerClass(
         // Mock 'app' property to prevent crashes with gtk4-ding
         get app() {
             return null;
+        }
+
+
+
+        _updateStyle() {
+
+            let brcolor = "#cccccc"; // Default: idle (light gray)
+
+            if (this._isSplatted)
+                brcolor = "#f30707"; // Dark gray for splatted
+
+            let btcolor = "#cccccc"; // Default: idle (light gray)
+            
+            if (this._state === State.FALLING)
+                btcolor = "#ff3333"; // Red
+            
+            if (this._state === State.WALKING)
+                btcolor = "#33cc33"; // Green
+            
+            if (this._godMode)
+                btcolor = "#6ecceb"; // Green
+            
+            this.actor.set_style(`border-top: 4px solid ${btcolor}; border-right: 4px solid ${brcolor};`);
         }
 
         /**
@@ -154,21 +163,70 @@ export const Gnomelet = GObject.registerClass(
          */
         _updateInteraction() {
             let allowInteraction = this._settings.get_boolean('allow-interaction');
+            let explodeOnClick = this._settings.get_boolean('explode-on-click');
+
+            // Set reactiveness based on either drag or click behavior
+            let shouldBeReactive = allowInteraction || explodeOnClick;
+
+            if (shouldBeReactive && !this.actor.reactive) {
+                this.actor.reactive = true;
+            } else if (!shouldBeReactive && this.actor.reactive) {
+                this.actor.reactive = false;
+            }
 
             // If allowed and not yet draggable, make it draggable
             if (allowInteraction) {
                 if (!this._draggable) {
-                    this.actor.reactive = true;
                     this._draggable = DND.makeDraggable(this.actor);
                     this._dragBeginId = this._draggable.connect('drag-begin', this._onDragBegin.bind(this));
                     this._dragEndId = this._draggable.connect('drag-end', this._onDragEnd.bind(this));
                 }
             } else {
-                // To disable, we make the actor non-reactive.
-                // We don't remove the draggable instance as it's bound to the actor,
-                // but reactivity controls the mouse events.
-                this.actor.reactive = false;
+                // Disable dragging if not allowed
+                if (this._draggable) {
+                    if (this._dragBeginId) this._draggable.disconnect(this._dragBeginId);
+                    if (this._dragEndId) this._draggable.disconnect(this._dragEndId);
+                    this._draggable = null;
+                }
             }
+
+            // Handle click events for explode-on-click
+            if (explodeOnClick) {
+                if (!this._clickHandlerId) {
+                    // Use release so we don't trigger on press (and can ignore drags)
+                    this._clickHandlerId = this.actor.connect('button-release-event', this._onClicked.bind(this));
+                }
+            } else {
+                if (this._clickHandlerId) {
+                    this.actor.disconnect(this._clickHandlerId);
+                    this._clickHandlerId = null;
+                }
+            }
+        }
+
+        _onClicked(actor, event) {
+            if (this._settings.get_boolean('explode-on-click')) {
+                // Ignore if we are (or just were) dragging — do not trigger after a drag
+                if (this._state === State.DRAGGING) return Clutter.EVENT_STOP;
+                if (this._dragOverlay) return Clutter.EVENT_STOP;
+                if (this._lastDragEndTime && (Date.now() - this._lastDragEndTime) < 300) return Clutter.EVENT_STOP;
+
+                // Honor god-mode immortality immediately after respawn
+                if (this._godMode) return Clutter.EVENT_STOP;
+
+                this._createSplatEffect(0);
+                this.actor.visible = false;
+
+                // Respawn after a short delay
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+                    if (this.actor) {
+                        this.actor.visible = true;
+                        this._respawn();
+                    }
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
+            return Clutter.EVENT_STOP;
         }
 
         _onDragBegin() {
@@ -178,6 +236,8 @@ export const Gnomelet = GObject.registerClass(
             this._updateAnimation();
             this._dragHistory = []; // Initialize drag history for momentum calculation
             this._dropTime = 0;
+            this._lastDragEndTime = 0;
+            
 
             // Create a full-screen transparent overlay to capture the drop event
             // This prevents the shell crash caused by unhiding the source actor from pick
@@ -250,7 +310,8 @@ export const Gnomelet = GObject.registerClass(
             this._icon.set_pivot_point(0.5, 0.5);
             this._icon.scale_x = this.facingRight ? 1 : -1;
 
-            this._state = State.FALLING;
+
+
 
             // Calculate and apply momentum from drag
             const momentum = this._calculateMomentum();
@@ -260,6 +321,13 @@ export const Gnomelet = GObject.registerClass(
             // Now that the drag flow is complete and dnd.js is satisfied, 
             // put the actor back in the correct layer (which might be uiGroup).
             this._resetLayer();
+            // mark recent drag end so click-release immediately after drag is ignored
+            this._lastDragEndTime = Date.now();
+
+
+
+            this._state = State.FALLING;
+            this._fallStartY = this._y; // Reset fall tracking for potential splat
         }
 
         /**
@@ -373,6 +441,11 @@ export const Gnomelet = GObject.registerClass(
                 return;
             }
 
+            // Track fall start position (only set once per fall)
+            if ((this._state === State.FALLING || this._state === State.JUMPING) && this._vy >= 0 && this._fallStartY === 0) {
+                this._fallStartY = this._y;
+            }
+
             // Physics (Gravity)
             if (this._state === State.FALLING || this._state === State.JUMPING) {
                 this._vy += GRAVITY;
@@ -466,6 +539,53 @@ export const Gnomelet = GObject.registerClass(
                         onGround = true;
                     }
                 }
+            }
+
+            // // If we landed while still in god mode, forget the fall so no splat triggers later
+            if (onGround && this._godMode) {
+                // this._isSplatted = true; // Prevent splat
+                this._fallStartY = this._y; // Reset fall tracking to current position
+            }
+
+            // --- Splat Effect Check ---
+            if (this._settings.get_boolean('death-by-high-falls'))
+            if (onGround) 
+            if (!this._godMode)
+            if (!this._isSplatted)
+                {
+                let screenHeight = global.stage.height;
+                let fallHeight = this._y - this._fallStartY;  // Correct: current Y - start Y = positive when falling
+                
+                if (fallHeight > screenHeight * 0.5) {
+                    
+                    if (!this._isSplatted)
+                    {   console.log('[Gnomelet] _fallStartY:', this._fallStartY);
+                        console.log('[Gnomelet] _y:', this._y);
+                        console.log('[Gnomelet]  fallHeight:', fallHeight) // 'vs threshold:', screenHeight * 0.5);
+                        console.log('[Gnomelet] threshold:', screenHeight * 0.5);
+                        console.log('[Gnomelet] SPLAT! Creating effect');
+                        console.log('[Gnomelet] =====================================');
+                    }                    
+                    this._isSplatted = true; // Prevent re-splat
+                    this._createSplatEffect(fallHeight);
+                    this.actor.visible = false;
+
+                    // Respawn after a short delay
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 400, () => {
+                        if (this.actor) {
+                            this.actor.visible = true;
+                            this._respawn();
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
+
+                    return;
+                }
+            }
+
+            // Reset fall tracking on successful landing
+            if (onGround) {
+                this._fallStartY = this._y;
             }
 
             // --- Z-Ordering / Layering Logic ---
@@ -613,6 +733,7 @@ export const Gnomelet = GObject.registerClass(
 
             this._updateAnimation();
             this.actor.set_position(Math.floor(this._x), Math.floor(this._y));
+            // this._updateStyle();
         }
 
         /**
@@ -681,6 +802,9 @@ export const Gnomelet = GObject.registerClass(
                 this._x = Math.floor(m.x + Math.random() * (m.width - this._displayW));
                 this._y = m.y;
             }
+
+            let spawnOffset = this._settings.get_int('spawn-offset');
+            this._y += spawnOffset;
         }
 
         /**
@@ -703,6 +827,21 @@ export const Gnomelet = GObject.registerClass(
             this._vx = 0;
             this._vy = 0;
             this._state = State.FALLING;
+            this._fallStartY = 0; // Reset fall tracking
+            this._isSplatted = false; // Allow next splat
+
+            // Grant short immortality after respawn
+            this._godMode = true;
+            
+            if (this._godModeTimeoutId) {
+                GLib.source_remove(this._godModeTimeoutId);
+                this._godModeTimeoutId = null;
+            }
+            this._godModeTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                this._godMode = false;
+                this._godModeTimeoutId = null;
+                return GLib.SOURCE_REMOVE;
+            });
 
             this._resetLayer();
         }
@@ -789,15 +928,123 @@ export const Gnomelet = GObject.registerClass(
         }
 
         /**
+         * Creates a splat particle effect with trailing smear when dying from a high fall.
+         */
+        _createSplatEffect(fallHeight) {
+            try {
+                const settingsScale = this._settings.get_int('gnomelet-scale');
+                const PARTICLE_SIZE = Math.max(2, Math.floor(settingsScale / 10));
+                const RED_SHADES = [
+                    '#FF0000', '#FF1744', '#FF5252', '#EF5350', '#E53935',
+                    '#D32F2F', '#C62828', '#B71C1C', '#8B0000'
+                ];
+
+                let parent = this.actor.get_parent() || Main.layoutManager.uiGroup;
+
+                // All particles spawn at the base (feet) of the character at splat
+                const baseX = this._x + this._displayW / 2;
+                const baseY = this._y + this._displayH;
+
+                const burstCount = 5; // Number of bursts for a richer effect
+                const particlesPerBurst = 10;
+
+                const createParticle = (angle, speed) => {
+                    let size = PARTICLE_SIZE + Math.floor(Math.random() * 5);
+                    let colorStr = RED_SHADES[Math.floor(Math.random() * RED_SHADES.length)];
+                    let particle = new St.Widget({
+                        width: size,
+                        height: size,
+                        style: 'background-color: ' + colorStr + '; border-radius: ' + Math.min(3, Math.floor(size / 2)) + 'px;',
+                        x: baseX - (size / 2),
+                        y: baseY - (size / 2),
+                        visible: true,
+                        reactive: false,
+                        opacity: 220,
+                    });
+                    parent.add_child(particle);
+
+                    let vx = Math.cos(angle) * speed * (0.8 + Math.random() * 0.6);
+                    let vy = Math.sin(angle) * speed * (0.7 + Math.random() * 0.5) - 2  ; 
+
+                    let screenHeight = global.stage.height;
+                    if (fallHeight !== 0) 
+                        vy = vy * fallHeight / screenHeight * 1.5; // Scale initial velocity based on fall height for more dramatic effect on higher falls
+                    
+                    let reachedGround = false;
+                    let fadeElapsed = 0;
+                    let fadeDuration = 600 + Math.floor(Math.random() * 800);
+                    let safetyMax = 4000;
+                    let lifetime = 0;
+
+                    let timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+                        lifetime += 16;
+                        if (lifetime > safetyMax) {
+                            particle.destroy();
+                            return GLib.SOURCE_REMOVE;
+                        }
+
+                        if (!reachedGround) {
+                            particle.x += vx;
+                            vy += GRAVITY * 0.18;
+                            particle.y += vy;
+                            vx *= 0.98;
+                            if (particle.y >= baseY - (size / 2)) {
+                                reachedGround = true;
+                                particle.y = baseY - (size / 2);
+                            }
+                        } else {
+                            fadeElapsed += 16;
+                            particle.opacity = Math.max(0, 220 * (1 - (fadeElapsed / fadeDuration)));
+                            particle.x += vx;
+                            vx *= 0.94;
+                            if (particle.opacity <= 5) {
+                                particle.destroy();
+                                return GLib.SOURCE_REMOVE;
+                            }
+                        }
+                        return GLib.SOURCE_CONTINUE;
+                    });
+                };
+
+                // Staggered bursts for a richer effect
+                for (let burst = 0; burst < burstCount; burst++) {
+                    let burstDelay = burst * 40;
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, burstDelay, () => {
+                        for (let i = 0; i < particlesPerBurst; i++) {
+                            let angle = (Math.PI * 2 * i) / particlesPerBurst + (Math.random() - 0.5) * 0.4;
+                            let speed = 3 + Math.random() * 4;
+
+                            if (fallHeight === 0)  {
+                                // clicked so angle is random on all directions with upward bias
+                                angle = Math.random() * Math.PI * 2;
+                            }
+                            createParticle(angle, speed);
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
+                }
+            } catch (e) {
+                log('[Gnomelet] ERROR in _createSplatEffect: ' + e.message);
+            }
+        }
+
+        /**
          * Removes the actor and cleans up references.
          */
         destroy() {
+            if (this._godModeTimeoutId) {
+                GLib.source_remove(this._godModeTimeoutId);
+                this._godModeTimeoutId = null;
+            }
             if (this._draggable) {
                 if (this._dragBeginId) this._draggable.disconnect(this._dragBeginId);
                 if (this._dragEndId) this._draggable.disconnect(this._dragEndId);
                 this._draggable = null;
             }
-
+            if (this._clickHandlerId && this.actor) {
+                this.actor.disconnect(this._clickHandlerId);
+                this._clickHandlerId = null;
+            }
             if (this.actor) {
                 let parent = this.actor.get_parent();
                 if (parent === Main.layoutManager.uiGroup) {

@@ -1,0 +1,8 @@
+# ignore all folders except folder Mouse and Santa
+characters/**/*
+!characters/Kitten/
+!characters/Mouse/
+!characters/Santa/
+!characters/Squirrel/
+!characters/Tux/
+
